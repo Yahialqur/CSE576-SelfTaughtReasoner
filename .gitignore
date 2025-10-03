@@ -1,3 +1,5 @@
 .env
 
 .venv/
+
+llama-gsm8k-finetuned
