@@ -81,12 +81,16 @@ print("PROMPTS USED FOR DATASET GENERATION:")
 print("=" * 50)
 print("\n1. RATIONALE GENERATION PROMPT (without hint):")
 print("   Question: {question}")
-print("   Let's think step by step.")
+print("   Solve the problem carefully. Show your reasoning step by step, then finish with:")
+print("   #### <final answer>")
+print("")
 print("   Answer:")
 print("\n2. RATIONALIZATION PROMPT (with hint):")
 print("   Question: {question}")
 print("   The correct answer is {correct_answer}.")
-print("   Let's think step by step to arrive at this answer.")
+print("   Solve the problem carefully. Show your reasoning step by step, then finish with:")
+print("   #### {correct_answer}")
+print("")
 print("   Answer:")
 print("=" * 50 + "\n")
 
@@ -105,10 +109,11 @@ for i in tqdm(range(0, len(train_ds), batch_size), desc="Rationale generation"):
     gold_answers = [train_ds[idx]["answer"].split("####")[-1].strip().replace(",", "") for idx in batch_indices]
     original_answers = [train_ds[idx]["answer"] for idx in batch_indices]
     
-    # Zero-Shot CoT prompting
+    # Zero-Shot CoT 
     prompts = [
         f"Question: {q}\n"
-        f"Let's think step by step and provide the final answer after ####.\n"
+        f"Solve the problem carefully. Show your reasoning step by step, then finish with:\n"
+        f"#### <final answer>\n\n"
         f"Answer:"
         for q in questions
     ]
@@ -146,11 +151,11 @@ if needs_rationalization:
     for i in tqdm(range(0, len(needs_rationalization), batch_size), desc="Rationalization"):
         batch = needs_rationalization[i:i+batch_size]
         
-        # Rationalization: provide the correct answer as a hint
         hint_prompts = [
             f"Question: {ex['question']}\n"
             f"The correct answer is {ex['gold_answer']}.\n"
-            f"Let's think step by step to arrive at this answer and end with #### {ex['gold_answer']}.\n"
+            f"Solve the problem carefully. Show your reasoning step by step, then finish with:\n"
+            f"#### {ex['gold_answer']}\n\n"
             f"Answer:"
             for ex in batch
         ]
