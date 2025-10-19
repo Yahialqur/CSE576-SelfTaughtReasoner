@@ -108,8 +108,8 @@ for i in tqdm(range(0, len(train_ds), batch_size), desc="Rationale generation"):
     # Zero-Shot CoT prompting
     prompts = [
         f"Question: {q}\n"
-        f"Let's think step by step.\n"
-        f"Answer: (Provide your reasoning, then end with '#### <final_answer>')"
+        f"Let's think step by step and provide the final answer after ####.\n"
+        f"Answer:"
         for q in questions
     ]
     
@@ -150,8 +150,8 @@ if needs_rationalization:
         hint_prompts = [
             f"Question: {ex['question']}\n"
             f"The correct answer is {ex['gold_answer']}.\n"
-            f"Let's think step by step to arrive at this answer.\n"
-            f"Answer: (Provide your reasoning, then end with '#### {ex['gold_answer']}')"
+            f"Let's think step by step to arrive at this answer and end with #### {ex['gold_answer']}.\n"
+            f"Answer:"
             for ex in batch
         ]
         
