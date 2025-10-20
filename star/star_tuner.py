@@ -1,0 +1,233 @@
+from datasets import load_dataset, Dataset
+import torch
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForCausalLM,
+    TrainingArguments,
+    Trainer,
+    DataCollatorForLanguageModeling
+)
+from huggingface_hub import login
+import os
+import pandas as pd
+
+# Check GPU availability
+print("=" * 50)
+print("GPU Configuration:")
+print(f"CUDA available: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"GPU device: {torch.cuda.get_device_name(0)}")
+    print(f"Number of GPUs: {torch.cuda.device_count()}")
+    print(f"Current GPU memory allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
+    print(f"Current GPU memory reserved: {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
+else:
+    raise RuntimeError("No GPU detected! Training will be very slow on CPU.")
+print("=" * 50)
+
+if "HF_TOKEN" in os.environ:
+    login(token=os.environ["HF_TOKEN"])
+
+# Load STaR dataset from CSV
+print("\nLoading STaR dataset...")
+df = pd.read_csv("star_dataset.csv")
+print(f"Total STaR examples: {len(df)}")
+
+# Split into train/eval (e.g., 95/5 split)
+train_size = int(0.95 * len(df))
+train_df = df[:train_size]
+eval_df = df[train_size:]
+
+# Convert to HuggingFace datasets
+train_ds = Dataset.from_pandas(train_df)
+eval_ds = Dataset.from_pandas(eval_df)
+
+print(f"Training samples: {len(train_ds)}")
+print(f"Validation samples: {len(eval_ds)}")
+
+# Show dataset info
+print("\nDataset columns:", train_ds.column_names)
+print("\nMethod distribution:")
+print(train_df['method'].value_counts())
+print("=" * 50)
+
+# Model configuration
+model_id = "meta-llama/Llama-3.2-3B-Instruct"
+
+# Load model
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    device_map="auto",
+    torch_dtype=torch.bfloat16,
+    trust_remote_code=True,
+)
+
+# Load tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
+
+# Enable gradient checkpointing
+model.gradient_checkpointing_enable()
+
+# Verify model is on GPU
+print("\nModel Device Placement:")
+print(f"Model device: {next(model.parameters()).device}")
+print(f"GPU memory after model load: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
+print("=" * 50)
+
+def format_example(example):
+    """Format STaR dataset example: question -> rationale"""
+    question = example["question"].strip()
+    rationale = example["rationale"].strip()
+    
+    # Format: Question: ... Answer: <rationale with reasoning and #### answer>
+    # The rationale already contains the complete solution with #### <answer> at the end
+    text = f"Question: {question}\nAnswer: {rationale}{tokenizer.eos_token}"
+    return {"text": text}
+
+# Preprocess datasets
+train_dataset = train_ds.map(format_example, remove_columns=train_ds.column_names)
+eval_dataset = eval_ds.map(format_example, remove_columns=eval_ds.column_names)
+
+# Show a sample
+print("\nSample formatted example:")
+sample_text = train_dataset[0]["text"]
+print(sample_text[:800])
+if len(sample_text) > 800:
+    print("...")
+    print(sample_text[-200:])
+print("=" * 50)
+
+def tokenize_function(examples):
+    """Tokenize the text"""
+    result = tokenizer(
+        examples["text"],
+        truncation=True,
+        max_length=1024,
+        padding=False,  
+    )
+    result["labels"] = result["input_ids"].copy()
+    return result
+
+# Tokenize datasets
+tokenized_train = train_dataset.map(
+    tokenize_function,
+    batched=True,
+    remove_columns=["text"],
+    desc="Tokenizing training dataset"
+)
+
+tokenized_eval = eval_dataset.map(
+    tokenize_function,
+    batched=True,
+    remove_columns=["text"],
+    desc="Tokenizing evaluation dataset"
+)
+
+from dataclasses import dataclass
+from typing import Any, Dict, List
+import torch
+
+@dataclass
+class DataCollatorForCompletionOnlyLM:
+    """Custom data collator that properly handles padding for both input_ids and labels"""
+    tokenizer: Any
+    
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        # Get max length in this batch
+        max_length = max(len(f["input_ids"]) for f in features)
+        
+        batch = {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": []
+        }
+        
+        for feature in features:
+            input_ids = feature["input_ids"]
+            labels = feature["labels"]
+            
+            # Calculate padding length
+            padding_length = max_length - len(input_ids)
+            
+            # Pad input_ids and attention_mask
+            padded_input_ids = input_ids + [self.tokenizer.pad_token_id] * padding_length
+            attention_mask = [1] * len(input_ids) + [0] * padding_length
+            
+            # Pad labels with -100 (ignore index)
+            padded_labels = labels + [-100] * padding_length
+            
+            batch["input_ids"].append(padded_input_ids)
+            batch["attention_mask"].append(attention_mask)
+            batch["labels"].append(padded_labels)
+        
+        # Convert to tensors
+        batch = {k: torch.tensor(v, dtype=torch.long) for k, v in batch.items()}
+        
+        return batch
+
+# Data collator with custom padding
+data_collator = DataCollatorForCompletionOnlyLM(tokenizer=tokenizer)
+
+# Training arguments
+training_args = TrainingArguments(
+    output_dir="./llama-star-finetuned",
+    num_train_epochs=3,
+    per_device_train_batch_size=8,
+    per_device_eval_batch_size=8,
+    gradient_accumulation_steps=2,
+    learning_rate=2e-5,
+    lr_scheduler_type="cosine",
+    warmup_ratio=0.05,
+    logging_steps=25,
+    eval_strategy="steps",
+    eval_steps=100,
+    save_strategy="steps",
+    save_steps=100,
+    save_total_limit=3,
+    bf16=True,
+    dataloader_num_workers=0, 
+    optim="adamw_torch_fused",
+    report_to="tensorboard",
+    load_best_model_at_end=True,
+    metric_for_best_model="loss",
+    greater_is_better=False,
+    gradient_checkpointing=True,
+    max_grad_norm=1.0,
+    weight_decay=0.01,
+    dataloader_pin_memory=True,  
+)
+
+# Initialize trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_train,
+    eval_dataset=tokenized_eval,
+    data_collator=data_collator,
+)
+
+# Start training
+print("\nStarting fine-tuning with STaR dataset...")
+print(f"Total parameters: {model.num_parameters():,}")
+print(f"Effective batch size: {training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps}")
+print(f"Training device: {training_args.device}")
+print("=" * 50)
+
+trainer.train()
+
+# Print final GPU memory usage
+print("\nFinal GPU Memory Usage:")
+print(f"GPU memory allocated: {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
+print(f"GPU memory reserved: {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
+print(f"Max GPU memory allocated during training: {torch.cuda.max_memory_allocated(0) / 1e9:.2f} GB")
+
+# Save the fine-tuned model
+print("\nSaving model...")
+trainer.save_model("./llama-star-finetuned/final")
+tokenizer.save_pretrained("./llama-star-finetuned/final")
+
+print("\nTraining complete! Model saved to ./llama-star-finetuned/final")
+print("\nTo use the fine-tuned model:")
+print("model = AutoModelForCausalLM.from_pretrained('./llama-star-finetuned/final')")
+print("tokenizer = AutoTokenizer.from_pretrained('./llama-star-finetuned/final')")
