@@ -30,20 +30,33 @@ model = AutoModelForCausalLM.from_pretrained(
 
 print(f"Loaded model from: {model_path}")
 print(f"Model device: {next(model.parameters()).device}")
+
+print("Compiling model")
+model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+
 print("=" * 50)
 
+# Prompt templates
+SYSTEM_PROMPT = (
+    "You are a meticulous math tutor. Solve grade-school math word problems step by step.\n"
+    "Make your reasoning explicit and finish with the final numeric answer in this exact format:\n"
+    "#### <number>\n"
+)
+
+USER_PROMPT = (
+    "Solve the problem carefully. Show your reasoning step by step, then finish with:\n"
+    "#### <final answer>\n\n"
+    "Question: {question}\n"
+)
+
 def extract_final_answer(text: str):
-    """Extract the final numerical answer"""
+    """Extract the final numerical answer from '#### <answer>'"""
     if not text:
         return None
     # Look for '#### <number>'
     m = re.search(r"####\s*([\-–—]?\d+(?:,\d{3})*(?:\.\d+)?)", text)
     if m:
         return m.group(1).replace(",", "").strip()
-    # Fallback: last number in output
-    nums = re.findall(r"([\-–—]?\d+(?:,\d{3})*(?:\.\d+)?)", text)
-    if nums:
-        return nums[-1].replace(",", "").strip()
     return None
 
 @torch.inference_mode()
@@ -69,30 +82,11 @@ def generate_batch(model, tokenizer, prompts, max_new_tokens=512):
 
 # STaR dataset generation 
 star_dataset = []
-batch_size = 32
+batch_size = 128
 
 print("\nGenerating STaR dataset with Zero-Shot CoT...")
 print(f"Batch size: {batch_size}")
 print("=" * 50)
-
-# Print prompts being used (for report)
-print("\n" + "=" * 50)
-print("PROMPTS USED FOR DATASET GENERATION:")
-print("=" * 50)
-print("\n1. RATIONALE GENERATION PROMPT (without hint):")
-print("   Question: {question}")
-print("   Solve the problem carefully. Show your reasoning step by step, then finish with:")
-print("   #### <final answer>")
-print("")
-print("   Answer:")
-print("\n2. RATIONALIZATION PROMPT (with hint):")
-print("   Question: {question}")
-print("   The correct answer is {correct_answer}.")
-print("   Solve the problem carefully. Show your reasoning step by step, then finish with:")
-print("   #### {correct_answer}")
-print("")
-print("   Answer:")
-print("=" * 50 + "\n")
 
 start_time = time.time()
 
@@ -109,12 +103,9 @@ for i in tqdm(range(0, len(train_ds), batch_size), desc="Rationale generation"):
     gold_answers = [train_ds[idx]["answer"].split("####")[-1].strip().replace(",", "") for idx in batch_indices]
     original_answers = [train_ds[idx]["answer"] for idx in batch_indices]
     
-    # Zero-Shot CoT 
+    # Zero-Shot CoT prompts
     prompts = [
-        f"Question: {q}\n"
-        f"Solve the problem carefully. Show your reasoning step by step, then finish with:\n"
-        f"#### <final answer>\n\n"
-        f"Answer:"
+        SYSTEM_PROMPT + "\n" + USER_PROMPT.format(question=q)
         for q in questions
     ]
     
@@ -151,12 +142,13 @@ if needs_rationalization:
     for i in tqdm(range(0, len(needs_rationalization), batch_size), desc="Rationalization"):
         batch = needs_rationalization[i:i+batch_size]
         
+        # Hint prompts with ground truth answer
         hint_prompts = [
-            f"Question: {ex['question']}\n"
-            f"The correct answer is {ex['gold_answer']}.\n"
+            SYSTEM_PROMPT + "\n" +
             f"Solve the problem carefully. Show your reasoning step by step, then finish with:\n"
             f"#### {ex['gold_answer']}\n\n"
-            f"Answer:"
+            f"Question: {ex['question']}\n"
+            f"The correct answer is {ex['gold_answer']}.\n"
             for ex in batch
         ]
         
