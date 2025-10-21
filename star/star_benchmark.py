@@ -6,6 +6,9 @@ import re
 from tqdm import tqdm
 import os
 
+# Silence tokenizer warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # Load test dataset
 test_ds = load_dataset("openai/gsm8k", "main", split="test")
 
@@ -19,6 +22,7 @@ model = AutoModelForCausalLM.from_pretrained(
     model_path,
     device_map="auto",
     torch_dtype=torch.bfloat16,
+    attn_implementation="sdpa",
 )
 
 print(f"Loaded model from: {model_path}")
@@ -42,43 +46,74 @@ def extract_final_answer(text: str):
     return None
 
 @torch.inference_mode()
-def generate(model, tokenizer, prompt, max_new_tokens=512):
-    """Generate completion from the model"""
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    gen = model.generate(
+def generate_batch(model, tokenizer, prompts, max_new_tokens=512):
+    """Generate completions for multiple prompts at once"""
+    # Tokenize all prompts with padding
+    inputs = tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=512,  # Max input length
+    ).to(model.device)
+    
+    # Generate for the entire batch
+    outputs = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         do_sample=False,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
     )
-    out = tokenizer.decode(gen[0], skip_special_tokens=True)
-    # Remove the input prompt from output
-    if out.startswith(prompt):
-        out = out[len(prompt):]
-    return out.strip()
+    
+    # Decode all outputs
+    decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    
+    # Remove the input prompts from outputs
+    completions = []
+    for prompt, output in zip(prompts, decoded_outputs):
+        if output.startswith(prompt):
+            completion = output[len(prompt):].strip()
+        else:
+            completion = output.strip()
+        completions.append(completion)
+    
+    return completions
 
-# Run evaluation
+# Run evaluation with batching
 questions, golds, pred_answers, pred_rationales = [], [], [], []
 
-print("\nStarting evaluation...")
-for ex in tqdm(test_ds, desc="Evaluating"):
-    q = ex["question"].strip()
-    gold = ex["answer"].split("####")[-1].strip().replace(",", "")
+# Batch size - adjust based on your GPU memory
+# 16 works well for A100, try 8 or 32 depending on available memory
+batch_size = 16
+
+print("\nStarting batched evaluation...")
+print(f"Batch size: {batch_size}")
+
+# Process in batches
+num_batches = (len(test_ds) + batch_size - 1) // batch_size
+
+for i in tqdm(range(0, len(test_ds), batch_size), total=num_batches, desc="Evaluating"):
+    # Get batch - FIX: HuggingFace dataset slicing returns dict of lists
+    batch_end = min(i + batch_size, len(test_ds))
+    batch = test_ds[i:batch_end]
     
-    # Format matches training: "Question: <question>\nAnswer: "
-    prompt = f"Question: {q}\nAnswer:"
+    # Extract data from the batch dictionary
+    batch_questions = [q.strip() for q in batch["question"]]
+    batch_golds = [ans.split("####")[-1].strip().replace(",", "") for ans in batch["answer"]]
+    batch_prompts = [f"Question: {q}\nAnswer:" for q in batch_questions]
     
-    # Generate completion
-    completion = generate(model, tokenizer, prompt)
+    # Generate completions for entire batch
+    completions = generate_batch(model, tokenizer, batch_prompts)
     
-    # Extract predicted answer
-    pred_num = extract_final_answer(completion) or ""
-    
-    questions.append(q)
-    golds.append(gold)
-    pred_answers.append(pred_num)
-    pred_rationales.append(completion)
+    # Process results
+    for q, gold, completion in zip(batch_questions, batch_golds, completions):
+        pred_num = extract_final_answer(completion) or ""
+        
+        questions.append(q)
+        golds.append(gold)
+        pred_answers.append(pred_num)
+        pred_rationales.append(completion)
 
 # Compute accuracy
 correct = [int(p.strip() == g.strip()) for p, g in zip(pred_answers, golds)]
@@ -133,3 +168,8 @@ for i, (idx, row) in enumerate(incorrect_examples.iterrows()):
 print("\n" + "=" * 50)
 print("Evaluation complete!")
 print("=" * 50)
+
+# Print performance info
+if torch.cuda.is_available():
+    print("\nGPU Memory Usage:")
+    print(f"Peak memory allocated: {torch.cuda.max_memory_allocated(0) / 1e9:.2f} GB")
