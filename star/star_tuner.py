@@ -173,9 +173,9 @@ data_collator = DataCollatorForCompletionOnlyLM(tokenizer=tokenizer)
 training_args = TrainingArguments(
     output_dir="./llama-star-finetuned",
     num_train_epochs=3,
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
-    gradient_accumulation_steps=2,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    gradient_accumulation_steps=4,
     learning_rate=2e-5,
     lr_scheduler_type="cosine",
     warmup_ratio=0.05,
@@ -186,7 +186,7 @@ training_args = TrainingArguments(
     save_steps=100,
     save_total_limit=3,
     bf16=True,
-    dataloader_num_workers=0, 
+    dataloader_num_workers=4, 
     optim="adamw_torch_fused",
     report_to="tensorboard",
     load_best_model_at_end=True,
@@ -195,7 +195,8 @@ training_args = TrainingArguments(
     gradient_checkpointing=True,
     max_grad_norm=1.0,
     weight_decay=0.01,
-    dataloader_pin_memory=True,  
+    dataloader_pin_memory=True, 
+    tf32=True, 
 )
 
 # Initialize trainer
