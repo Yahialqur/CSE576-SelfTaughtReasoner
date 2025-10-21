@@ -29,7 +29,7 @@ if "HF_TOKEN" in os.environ:
 
 # Load STaR dataset from CSV
 print("\nLoading STaR dataset...")
-df = pd.read_csv("star_dataset.csv")
+df = pd.read_csv("star_dataset_final.csv")
 print(f"Total STaR examples: {len(df)}")
 
 # Split into train/eval (e.g., 95/5 split)
