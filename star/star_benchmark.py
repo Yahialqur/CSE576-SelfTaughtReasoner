@@ -39,7 +39,6 @@ def extract_final_answer(text: str):
     if m:
         # Remove commas from numbers
         return m.group(1).replace(",", "").strip()
-    # Fallback: last number in output
     nums = re.findall(r"([\-–—]?\d+(?:,\d{3})*(?:\.\d+)?)", text)
     if nums:
         return nums[-1].replace(",", "").strip()
@@ -54,7 +53,7 @@ def generate_batch(model, tokenizer, prompts, max_new_tokens=512):
         return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=512,  # Max input length
+        max_length=512,  
     ).to(model.device)
     
     # Generate for the entire batch
@@ -83,8 +82,6 @@ def generate_batch(model, tokenizer, prompts, max_new_tokens=512):
 # Run evaluation with batching
 questions, golds, pred_answers, pred_rationales = [], [], [], []
 
-# Batch size - adjust based on your GPU memory
-# 16 works well for A100, try 8 or 32 depending on available memory
 batch_size = 16
 
 print("\nStarting batched evaluation...")

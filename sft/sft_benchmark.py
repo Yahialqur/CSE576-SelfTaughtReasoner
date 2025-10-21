@@ -32,7 +32,6 @@ def extract_final_answer(text: str):
     if m:
         # Remove commas from numbers
         return m.group(1).replace(",", "").strip()
-    # Fallback: last number in output
     nums = re.findall(r"([\-–—]?\d+(?:,\d{3})*(?:\.\d+)?)", text)
     if nums:
         return nums[-1].replace(",", "").strip()

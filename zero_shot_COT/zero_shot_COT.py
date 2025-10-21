@@ -47,7 +47,6 @@ def extract_final_answer(text: str):
     m = re.search(r"####\s*([\-–—]?\d+(?:\.\d+)?)", text)
     if m:
         return m.group(1).strip()
-    # fallback: last number in output
     nums = re.findall(r"([\-–—]?\d+(?:\.\d+)?)", text)
     return nums[-1] if nums else None
 

@@ -3,3 +3,5 @@
 .venv/
 
 llama-gsm8k-finetuned
+
+.DS_Store
